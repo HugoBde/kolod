@@ -17,12 +17,12 @@ const PROGRAM_COUNTER_INDEX: u32 = 15;
 
 #[derive(PartialEq)]
 
-enum CpuMode {
+enum CpuState {
     ARM,
     THUMB,
 }
 
-enum CpuState {
+enum CpuMode {
     User      = 0b10000,
     FIQ       = 0b10001,
     IRQ       = 0b10010,
@@ -52,18 +52,92 @@ enum Flag {
 }
 
 #[allow(dead_code)]
+
 impl CPU {
-    pub fn new(mem: Rc<RefCell<Memory>>) -> CPU {
+    pub fn new(mem: &Rc<RefCell<Memory>>) -> CPU {
 
         CPU {
-            mode: CpuMode::ARM,
-            state: CpuState::User,
+            mode: CpuMode::User,
+            state: CpuState::ARM,
             gen_registers: [0; GEN_PURPOSE_REGISTERS_NUM],
             status_registers: [0; STATE_REGISTERS_NUM],
             cpsr_register: 0,
             spsr_register: [0; SAVED_PROGRAM_STATUS_REGISTERS_NUM],
-            mem,
+            mem: mem.clone()
         }
+    }
+
+    pub fn clock(&mut self) {
+
+        match self.state {
+            CpuState::ARM => self.clock_arm(),
+            CpuState::THUMB => self.clock_thumb(),
+        }
+    }
+
+    pub fn clock_arm(&mut self) {
+
+        // FETCH
+        let opcode = self.fetch_arm_opcode();
+
+        // DECODE
+        let instruction = CPU_ARM_LUT[CPU::arm_opcode_get_bits(opcode)];
+
+        // EXECUTE
+        instruction(self, opcode);
+    }
+
+    pub fn clock_thumb(&mut self) {
+
+        // FETCH
+        let opcode = self.fetch_thumb_opcode();
+
+        // DECODE
+        let instruction = CPU_THUMB_LUT[CPU::thumb_opcode_get_bits(opcode)];
+
+        // EXECUTE
+        instruction(self, opcode);
+    }
+
+    fn fetch_arm_opcode(&self) -> u32 {
+
+        let addr = self.read_pc();
+
+        self.mem.borrow().read_word(addr)
+    }
+
+    fn fetch_thumb_opcode(&self) -> u16 {
+
+        let addr = self.read_pc();
+
+        // Do the thing about the bit saying if you should read the upper two bytes or the lower two bytes
+        self.mem.borrow().read_half(addr)
+    }
+
+    fn arm_opcode_get_bits(opcode: u32) -> usize {
+        let opcode = opcode as usize; 
+
+        // Bits 27 to 20
+        let upper_bits = (opcode >> 20) & 0xFF;
+
+        // Bits 7 to 4
+        let lower_bits = (opcode >> 4) & 0xF;
+
+        upper_bits | lower_bits
+    }
+
+    fn thumb_opcode_get_bits(opcode: u16) -> usize {
+        let opcode = opcode as usize;
+
+        opcode
+    }
+
+    fn arm_check_cond(&self, opcode: u32) -> bool {
+        todo!()
+    }
+
+    fn thumb_check_cond(&self, opcode: u16) -> bool {
+        todo!()
     }
 
     fn get_flag(&self, flag: Flag) -> u32 {
@@ -166,10 +240,10 @@ impl CPU {
 
         let reg = reg as usize;
 
-        match &self.state {
-            CpuState::User => self.gen_registers[reg] = val,
-            CpuState::System => self.gen_registers[reg] = val,
-            CpuState::FIQ => {
+        match &self.mode {
+            CpuMode::User => self.gen_registers[reg] = val,
+            CpuMode::System => self.gen_registers[reg] = val,
+            CpuMode::FIQ => {
                 if 7 < reg && reg < 15 {
 
                     self.gen_registers[reg + 8] = val;
@@ -178,7 +252,7 @@ impl CPU {
                     self.gen_registers[reg] = val;
                 }
             }
-            CpuState::Super => {
+            CpuMode::Super => {
                 if reg == 13 || reg == 14 {
 
                     self.gen_registers[reg + 10] = val;
@@ -187,7 +261,7 @@ impl CPU {
                     self.gen_registers[reg] = val;
                 }
             }
-            CpuState::Abort => {
+            CpuMode::Abort => {
                 if reg == 13 || reg == 14 {
 
                     self.gen_registers[reg + 12] = val;
@@ -196,7 +270,7 @@ impl CPU {
                     self.gen_registers[reg] = val;
                 }
             }
-            CpuState::IRQ => {
+            CpuMode::IRQ => {
                 if reg == 13 || reg == 14 {
 
                     self.gen_registers[reg + 14] = val;
@@ -205,7 +279,7 @@ impl CPU {
                     self.gen_registers[reg] = val;
                 }
             }
-            CpuState::Undefined => {
+            CpuMode::Undefined => {
                 if reg == 13 || reg == 14 {
 
                     self.gen_registers[reg + 16] = val;
@@ -221,10 +295,10 @@ impl CPU {
 
         let reg = reg as usize;
 
-        match &self.state {
-            CpuState::User => self.gen_registers[reg],
-            CpuState::System => self.gen_registers[reg],
-            CpuState::FIQ => {
+        match &self.mode {
+            CpuMode::User => self.gen_registers[reg],
+            CpuMode::System => self.gen_registers[reg],
+            CpuMode::FIQ => {
                 if 7 < reg && reg < 15 {
 
                     self.gen_registers[reg + 8]
@@ -233,7 +307,7 @@ impl CPU {
                     self.gen_registers[reg]
                 }
             }
-            CpuState::Super => {
+            CpuMode::Super => {
                 if reg == 13 || reg == 14 {
 
                     self.gen_registers[reg + 10]
@@ -242,7 +316,7 @@ impl CPU {
                     self.gen_registers[reg]
                 }
             }
-            CpuState::Abort => {
+            CpuMode::Abort => {
                 if reg == 13 || reg == 14 {
 
                     self.gen_registers[reg + 12]
@@ -251,7 +325,7 @@ impl CPU {
                     self.gen_registers[reg]
                 }
             }
-            CpuState::IRQ => {
+            CpuMode::IRQ => {
                 if reg == 13 || reg == 14 {
 
                     self.gen_registers[reg + 14]
@@ -260,7 +334,7 @@ impl CPU {
                     self.gen_registers[reg]
                 }
             }
-            CpuState::Undefined => {
+            CpuMode::Undefined => {
                 if reg == 13 || reg == 14 {
 
                     self.gen_registers[reg + 16]
@@ -272,6 +346,7 @@ impl CPU {
         }
     }
 
+    // There are many errors in the barrel shifter logic but i can't be fucked sorting that out now
     fn barrel_shifter(&self, val: u32, shift_op: u32) -> u32 {
 
         let shift_amount = if shift_op & 0x1 != 0 {
@@ -393,11 +468,11 @@ impl CPU {
 
         self.write_pc(self.read_reg(opcode & 0xf));
 
-        let new_mode = if opcode & 0x1 == 0 { CpuMode::ARM } else { CpuMode::THUMB };
+        let new_state = if opcode & 0x1 == 0 { CpuState::ARM } else { CpuState::THUMB };
 
-        if new_mode != self.mode {
+        if new_state != self.state {
 
-            self.mode = new_mode;
+            self.state = new_state;
 
             todo!("Flush pipeline");
         }
@@ -420,6 +495,8 @@ impl CPU {
 
     fn arm_LDR(&mut self, opcode: u32) {}
 
+    fn arm_LDRH(&mut self, opcode: u32) {}
+
     fn arm_MCR(&mut self, opcode: u32) {}
 
     fn arm_MLA(&mut self, opcode: u32) {}
@@ -438,6 +515,8 @@ impl CPU {
     fn arm_PSR(&mut self, opcode: u32) {}
 
     fn arm_MUL(&mut self, opcode: u32) {}
+
+    fn arm_MULL(&mut self, opcode: u32) {}
 
     fn arm_MVN(&mut self, op2: u32) -> u32 {
 
@@ -470,6 +549,8 @@ impl CPU {
 
     fn arm_STR(&mut self, opcode: u32) {}
 
+    fn arm_STRH(&mut self, opcode: u32) {}
+
     fn arm_SUB(&mut self, op1: u32, op2: u32) -> u32 {
 
         op1 - op2
@@ -482,4 +563,68 @@ impl CPU {
     fn arm_TEQ(&mut self, op1: u32, op2: u32) {}
 
     fn arm_TST(&mut self, op1: u32, op2: u32) {}
+
+    fn arm_undefined(&mut self, opcode: u32) {
+        panic!("ARM UNDEFINED {:#x}", opcode);
+    }
+
+    fn thumb_data_proc(&mut self, opcode: u16) {}
 }
+
+const CPU_ARM_LUT : [for<'a> fn(&'a mut CPU, opcode: u32) ; 4096] = {
+    let mut lut : [for<'a> fn(&'a mut CPU, opcode: u32) ; 4096] = [CPU::arm_undefined; 4096];
+
+    let mut i = 0;
+
+    while i < 4096 {
+        lut[i] = if i & 0b111100000000 == 0b111100000000 {
+            CPU::arm_SWI
+        } else if i & 0b111100010001 == 0b111000010001 {
+            CPU::arm_MRC
+        } else if i & 0b111100010001 == 0b111000000001 {
+            CPU::arm_MCR
+        } else if i & 0b111100000001 == 0b111000000000 {
+            CPU::arm_CDP
+        } else if i & 0b111000010000 == 0b110000010000 {
+            CPU::arm_LDC
+        } else if i & 0b111000010000 == 0b110000000000 {
+            CPU::arm_STC
+        } else if i & 0b111100000000 == 0b101000000000 {
+            CPU::arm_BL
+        } else if i & 0b111100000000 == 0b100000000000 {
+            CPU::arm_B
+        } else if i & 0b111000010000 == 0b100000010000 {
+            CPU::arm_LDM
+        } else if i & 0b111000010000 == 0b100000000000 {
+            CPU::arm_STM
+        } else if i & 0b111000010000 == 0b011000010000 {
+            CPU::arm_undefined
+        } else if i & 0b110000010000 == 0b010000010000 {
+            CPU::arm_LDR
+        } else if i & 0b110000010000 == 0b010000000000 {
+            CPU::arm_STR
+        } else if i & 0b111000011001 == 0b000000011001 {
+            CPU::arm_LDRH
+        } else if i & 0b111000011001 == 0b000000001001 {
+            CPU::arm_STRH
+        } else if i & 0b111111111111 == 0b000100100001 {
+            CPU::arm_BX
+        } else if i & 0b111110111111 == 0b000100001001 {
+            CPU::arm_SWP
+        } else if i & 0b111110001111 == 0b000010001001 {
+            CPU::arm_MULL
+        } else if i & 0b111110001111 == 0b000000001001 {
+            CPU::arm_MUL
+        } else if i & 01100000000000 == 0b000000000000 {
+            CPU::arm_data_proc
+        } else {
+            CPU::arm_undefined
+        };
+
+        i += 1;
+    }
+
+    lut
+};
+
+const CPU_THUMB_LUT : [for<'a> fn(&'a mut CPU, opcode: u16) ; 4096] = [CPU::thumb_data_proc; 4096];

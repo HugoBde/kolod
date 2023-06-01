@@ -71,7 +71,9 @@ impl Memory {
         Ok(())
     }
 
-    pub fn read_byte(&self, addr: usize) -> u8 {
+    pub fn read_byte(&self, addr: u32) -> u8 {
+
+        let addr = addr as usize;
 
         match addr {
             0x00000000..=0x00003fff => return self.bios[addr - BIOS_OFFSET],
@@ -88,7 +90,9 @@ impl Memory {
         }
     }
 
-    pub fn read_half(&self, addr: usize) -> u16 {
+    pub fn read_half(&self, addr: u32) -> u16 {
+
+        let addr = addr as usize;
 
         if addr & 0x1 != 0 {
 
@@ -110,7 +114,9 @@ impl Memory {
         }
     }
 
-    pub fn read_word(&self, addr: usize) -> u32 {
+    pub fn read_word(&self, addr: u32) -> u32 {
+
+        let addr = addr as usize;
 
         if addr & 0x11 != 0 {
 

@@ -3,13 +3,16 @@ use std::io;
 use std::rc::Rc;
 
 use crate::cpu::CPU;
-use crate::memory;
 use crate::memory::Memory;
+use crate::ppu::PPU;
+
+const PPU_FLIP_PERIOD: usize = 16667;
 
 pub struct GBA {
     // Components
     cpu: CPU,
     mem: Rc<RefCell<Memory>>,
+    ppu: PPU,
 
     // Misc
     game_loaded: bool,
@@ -23,7 +26,10 @@ impl GBA {
         let mem_rc = Rc::new(mem);
 
         GBA {
-            cpu: CPU::new(mem_rc.clone()),
+            cpu: CPU::new(&mem_rc),
+            ppu: PPU::new(&mem_rc),
+
+            // Keep this below any element which requires a reference to mem so that we can copy it before it is moved
             mem: mem_rc,
 
             game_loaded: false,
@@ -49,10 +55,18 @@ impl GBA {
             panic!("No game loaded!");
         }
 
-        let mem_refcell = self.mem.borrow();
+        let mut clock_cycles = 0;
 
-        let game_title_slice = mem_refcell.read_slice(memory::GAME_PAK_OFFSET + 0xa0, 12);
+        loop {
 
-        println!("Game: {}", std::str::from_utf8(game_title_slice).unwrap());
+            if clock_cycles == 0 {
+
+                self.ppu.flip();
+
+                clock_cycles += PPU_FLIP_PERIOD;
+            }
+
+            self.cpu.clock();
+        }
     }
 }
