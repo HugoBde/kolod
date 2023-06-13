@@ -83,8 +83,11 @@ impl CPU {
         // DECODE
         let instruction = CPU_ARM_LUT[CPU::arm_opcode_get_bits(opcode)];
 
-        // EXECUTE
-        instruction(self, opcode);
+        if self.arm_check_cond(opcode) {
+            // EXECUTE
+            instruction(self, opcode);
+        }
+
     }
 
     pub fn clock_thumb(&mut self) {
@@ -564,11 +567,97 @@ impl CPU {
 
     fn arm_TST(&mut self, op1: u32, op2: u32) {}
 
+    fn thumb_ADC(&mut self, opcode: u16) {}
+
+    fn thumb_ADD(&mut self, opcode: u16) {}
+
+    fn thumb_ADD_SP(&mut self, opcode: u16) {}
+
+    fn thumb_AND(&mut self, opcode: u16) {}
+
+    fn thumb_ASR(&mut self, opcode: u16) {}
+
+    fn thumb_B(&mut self, opcode: u16) {}
+
+    fn thumb_B_cond(&mut self, opcode: u16) {}
+
+    fn thumb_BIC(&mut self, opcode: u16) {}
+
+    fn thumb_BL(&mut self, opcode: u16) {}
+
+    fn thumb_BX(&mut self, opcode: u16) {}
+
+    fn thumb_CMN(&mut self, opcode: u16) {}
+
+    fn thumb_CMP(&mut self, opcode: u16) {}
+
+    fn thumb_EOR(&mut self, opcode: u16) {}
+
+    fn thumb_LDMIA(&mut self, opcode: u16) {}
+
+    fn thumb_LDR_reg_off(&mut self, opcode: u16) {}
+
+    fn thumb_LDR_imm(&mut self, opcode: u16) {}
+
+    fn thumb_LDRB(&mut self, opcode: u16) {}
+
+    fn thumb_LDRH(&mut self, opcode: u16) {}
+
+    fn thumb_LOAD_ADDR(&mut self, opcode: u16) {}
+
+    fn thumb_LOAD_SP(&mut self, opcode: u16) {}
+
+    fn thumb_LSL(&mut self, opcode: u16) {}
+
+    fn thumb_LDSB(&mut self, opcode: u16) {}
+
+    fn thumb_LDSH(&mut self, opcode: u16) {}
+
+    fn thumb_LSR(&mut self, opcode: u16) {}
+
+    fn thumb_MOV(&mut self, opcode: u16) {}
+
+    fn thumb_MUL(&mut self, opcode: u16) {}
+
+    fn thumb_MVN(&mut self, opcode: u16) {}
+
+    fn thumb_NEG(&mut self, opcode: u16) {}
+
+    fn thumb_ORR(&mut self, opcode: u16) {}
+
+    fn thumb_POP(&mut self, opcode: u16) {}
+
+    fn thumb_PUSH(&mut self, opcode: u16) {}
+
+    fn thumb_ROR(&mut self, opcode: u16) {}
+
+    fn thumb_SBC(&mut self, opcode: u16) {}
+
+    fn thumb_STMIA(&mut self, opcode: u16) {}
+
+    fn thumb_STORE_SP(&mut self, opcode: u16) {}
+
+    fn thumb_STR(&mut self, opcode: u16) {}
+
+    fn thumb_STRB(&mut self, opcode: u16) {}
+
+    fn thumb_STRH(&mut self, opcode: u16) {}
+
+    fn thumb_SWI(&mut self, opcode: u16) {}
+
+    fn thumb_SUB(&mut self, opcode: u16) {}
+
+    fn thumb_TST(&mut self, opcode: u16) {}
+
+
+
     fn arm_undefined(&mut self, opcode: u32) {
         panic!("ARM UNDEFINED {:#x}", opcode);
     }
 
-    fn thumb_data_proc(&mut self, opcode: u16) {}
+    fn thumb_undefined(&mut self, opcode: u16) {
+        panic!("THUMB UNDEFINED {:#x}", opcode);
+    }
 }
 
 const CPU_ARM_LUT : [for<'a> fn(&'a mut CPU, opcode: u32) ; 4096] = {
@@ -627,4 +716,47 @@ const CPU_ARM_LUT : [for<'a> fn(&'a mut CPU, opcode: u32) ; 4096] = {
     lut
 };
 
-const CPU_THUMB_LUT : [for<'a> fn(&'a mut CPU, opcode: u16) ; 4096] = [CPU::thumb_data_proc; 4096];
+const CPU_THUMB_LUT : [for<'a> fn(&'a mut CPU, opcode: u16) ; 4096] = {
+    let mut lut = [CPU::thumb_undefined; 4096];
+    
+    let mut i = 0;
+
+    while i < 256 {
+
+        lut[i] = if i & 0b11110000 == 0b11110000 {
+            CPU::thumb_BL
+        } else if i & 0b111110000 == 0b11100000 {
+            CPU::thumb_B
+        } else if i & 0b11111111 == 0b11011111 {
+            CPU::thumb_SWI
+        } else if i & 0b11110000 == 0b11010000 {
+            CPU::thumb_B_cond
+        } else if i & 0b11111000 == 0b11001000 {
+            CPU::thumb_LDMIA
+        } else if i & 0b11111000 == 0b11000000 {
+            CPU::thumb_STMIA
+        } else if i & 0b11111110 == 0b10111100 {
+            CPU::thumb_POP
+        } else if i & 0b11111110 == 0b10110100 {
+            CPU::thumb_PUSH
+        } else if i & 0b11111111 == 0b10110000 {
+            CPU::thumb_ADD_SP
+        } else if i & 0b11110000 == 0b10100000 {
+            CPU::thumb_LOAD_ADDR
+        } else if i & 0b11111000 == 0b10011000 {
+            CPU::thumb_LOAD_SP
+        } else if i & 0b11111000 == 0b10010000 {
+            CPU::thumb_STORE_SP
+        } else if i & 0b11111000 == 0b10001000 {
+            CPU::thumb_LDRH
+        } else if i & 0b11111000 == 0b10000000 {
+            CPU::thumb_STRH
+        } else if i & 0b11101000 == 0b01101000 {
+            CPU::thumb_LDR_imm
+        }
+
+        i += 1;
+    }
+
+    lut
+}
