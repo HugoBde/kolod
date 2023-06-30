@@ -1,3 +1,6 @@
+#![allow(non_snake_case)]
+#![cfg_attr(debug_assertions, allow(dead_code))]
+
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 
@@ -64,9 +67,12 @@ impl Memory {
 
         log::debug!("Loading file {}", file_name);
 
-        let reader = BufReader::new(File::open(file_name)?);
+        let mut reader = BufReader::new(File::open(file_name)?);
 
-        self.game_pak_size = reader.take(GAME_PAK_SIZE as u64).read(&mut self.game_pak)?;
+        if let Ok(rom_size) = reader.read_to_end(&mut self.game_pak) {
+
+            assert!(rom_size <= GAME_PAK_SIZE);
+        }
 
         Ok(())
     }

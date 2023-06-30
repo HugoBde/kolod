@@ -1,3 +1,6 @@
+#![allow(non_snake_case)]
+#![cfg_attr(debug_assertions, allow(dead_code))]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -15,8 +18,5 @@ impl PPU {
         }
     }
 
-    pub fn flip(&mut self) {
-
-        println!("PPU::flip");
-    }
+    pub fn flip(&mut self) {}
 }

@@ -7,4 +7,6 @@ edition = "2021"
 
 [dependencies]
 log = "0.4.17"
+num-derive = "0.3.3"
+num-traits = "0.2"
 simple_logger = "4.1.0"

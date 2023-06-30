@@ -10,9 +10,9 @@ const PPU_FLIP_PERIOD: usize = 16667;
 
 pub struct GBA {
     // Components
-    cpu: CPU,
-    mem: Rc<RefCell<Memory>>,
-    ppu: PPU,
+    pub cpu: CPU,
+    mem:     Rc<RefCell<Memory>>,
+    ppu:     PPU,
 
     // Misc
     game_loaded: bool,
@@ -67,6 +67,8 @@ impl GBA {
             }
 
             self.cpu.clock();
+
+            clock_cycles -= 1;
         }
     }
 }

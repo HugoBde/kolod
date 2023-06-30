@@ -14,6 +14,8 @@ fn main() {
 
     let mut my_gba = GBA::new();
 
+    println!("{:?}", my_gba.cpu);
+
     // Load game in memory
     if let Some(file_name) = args.nth(1) {
 

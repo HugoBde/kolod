@@ -1,7 +1,15 @@
+#![allow(non_snake_case)]
+#![cfg_attr(debug_assertions, allow(dead_code))]
+#![cfg_attr(debug_assertions, allow(unused_variables))]
+
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::thread::sleep;
 
-use crate::memory::Memory;
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive;
+
+use crate::memory::{self, Memory};
 
 const STATE_REGISTERS_NUM: usize = 6;
 
@@ -15,12 +23,14 @@ const LINK_REGISTER_INDEX: u32 = 14;
 
 const PROGRAM_COUNTER_INDEX: u32 = 15;
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug)]
 
 enum CpuState {
     ARM,
     THUMB,
 }
+
+#[derive(Debug)]
 
 enum CpuMode {
     User      = 0b10000,
@@ -32,6 +42,28 @@ enum CpuMode {
     System    = 0b11111,
 }
 
+#[derive(FromPrimitive)]
+
+enum InstructionCondition {
+    //              |          desc           |  flags         |
+    //              +-------------------------+----------------+
+    EQ = 0b0000, // | equal                   | Z              |
+    NE = 0b0001, // | not equal               | ~Z             |
+    CS = 0b0010, // | unsigned higher or same | C              |
+    CC = 0b0011, // | unsigned lower          | ~C             |
+    MI = 0b0100, // | negative                | N              |
+    PL = 0b0101, // | positive or zero        | ~N             |
+    VS = 0b0110, // | overflow                | V              |
+    VC = 0b0111, // | no overflow             | ~V             |
+    HI = 0b1000, // | unsigned higher         | C && ~Z        |
+    LS = 0b1001, // | unsigned lower or same  | ~C || Z        |
+    GE = 0b1010, // | greater or equal        | N == V         |
+    LT = 0b1011, // | less than               | N != V         |
+    GT = 0b1100, // | greater than            | ~Z && (N == V) |
+    LE = 0b1101, // | less than or equal      | Z || (N != V)  |
+    AL = 0b1110, // | always                  | ---            |
+}
+
 pub struct CPU {
     mode:  CpuMode,
     state: CpuState,
@@ -41,6 +73,9 @@ pub struct CPU {
     cpsr_register:    u32,
     spsr_register:    [u32; SAVED_PROGRAM_STATUS_REGISTERS_NUM],
     mem:              Rc<RefCell<Memory>>,
+
+    arm_lut:   [(fn(&mut CPU, u32), &'static str); 4096],
+    thumb_lut: [(fn(&mut CPU, u16), &'static str); 256],
 }
 
 enum Flag {
@@ -53,21 +88,173 @@ enum Flag {
 
 #[allow(dead_code)]
 
+impl std::fmt::Debug for CPU {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+
+        f.debug_struct("CPU")
+            .field("mode", &self.mode)
+            .field("state", &self.state)
+            .field("gen_reg", &self.gen_registers)
+            .field("status reg", &self.status_registers)
+            .field("cpsr_reg", &self.cpsr_register)
+            .field("spsr_reg", &self.spsr_register)
+            .finish()
+    }
+}
+
 impl CPU {
     pub fn new(mem: &Rc<RefCell<Memory>>) -> CPU {
 
-        CPU {
-            mode: CpuMode::User,
-            state: CpuState::ARM,
-            gen_registers: [0; GEN_PURPOSE_REGISTERS_NUM],
+        let mut cpu = CPU {
+            mode:             CpuMode::User,
+            state:            CpuState::ARM,
+            gen_registers:    [0; GEN_PURPOSE_REGISTERS_NUM],
             status_registers: [0; STATE_REGISTERS_NUM],
-            cpsr_register: 0,
-            spsr_register: [0; SAVED_PROGRAM_STATUS_REGISTERS_NUM],
-            mem: mem.clone()
+            cpsr_register:    0,
+            spsr_register:    [0; SAVED_PROGRAM_STATUS_REGISTERS_NUM],
+            mem:              mem.clone(),
+
+            arm_lut:   [(CPU::arm_undefined, "arm und"); 4096],
+            thumb_lut: [(CPU::thumb_undefined, "thumb und"); 256],
+        };
+
+        // let mut i = 0;
+        //
+        //        while i < 256 {
+        //
+        //            cpu.thumb_lut[i] = if i & 0b11110000 == 0b11110000 {
+        //
+        //                (CPU::thumb_BL, "thumb bl")
+        //            } else if i & 0b111110000 == 0b11100000 {
+        //
+        //                (CPU::thumb_B, "thumb b")
+        //            } else if i & 0b11111111 == 0b11011111 {
+        //
+        //                (CPU::thumb_SWI, "thumb swi")
+        //            } else if i & 0b11110000 == 0b11010000 {
+        //
+        //                (CPU::thumb_B_cond, "thumb b cond")
+        //            } else if i & 0b11111000 == 0b11001000 {
+        //
+        //                CPU::thumb_LDMIA
+        //            } else if i & 0b11111000 == 0b11000000 {
+        //
+        //                CPU::thumb_STMIA
+        //            } else if i & 0b11111110 == 0b10111100 {
+        //
+        //                CPU::thumb_POP
+        //            } else if i & 0b11111110 == 0b10110100 {
+        //
+        //                CPU::thumb_PUSH
+        //            } else if i & 0b11111111 == 0b10110000 {
+        //
+        //                CPU::thumb_ADD_SP
+        //            } else if i & 0b11110000 == 0b10100000 {
+        //
+        //                CPU::thumb_LOAD_ADDR
+        //            } else if i & 0b11111000 == 0b10011000 {
+        //
+        //                CPU::thumb_LOAD_SP
+        //            } else if i & 0b11111000 == 0b10010000 {
+        //
+        //                CPU::thumb_STORE_SP
+        //            } else if i & 0b11111000 == 0b10001000 {
+        //
+        //                CPU::thumb_LDRH
+        //            } else if i & 0b11111000 == 0b10000000 {
+        //
+        //                CPU::thumb_STRH
+        //            } else if i & 0b11101000 == 0b01101000 {
+        //
+        //                CPU::thumb_LDR_imm
+        //            } else {
+        //
+        //                CPU::thumb_undefined
+        //            };
+        //
+        //            i += 1;
+        //        }
+
+        let mut i = 0;
+
+        while i < 4096 {
+
+            cpu.arm_lut[i] = if i & 0b111100000000 == 0b111100000000 {
+
+                (CPU::arm_SWI, "arm swi")
+            } else if i & 0b111100010001 == 0b111000010001 {
+
+                (CPU::arm_MRC, "arm mrc")
+            } else if i & 0b111100010001 == 0b111000000001 {
+
+                (CPU::arm_MCR, "arm mcr")
+            } else if i & 0b111100000001 == 0b111000000000 {
+
+                (CPU::arm_CDP, "arm cdp")
+            } else if i & 0b111000010000 == 0b110000010000 {
+
+                (CPU::arm_LDC, "arm ldc")
+            } else if i & 0b111000010000 == 0b110000000000 {
+
+                (CPU::arm_STC, "arm stc")
+            } else if i & 0b111100000000 == 0b101000000000 {
+
+                (CPU::arm_BL, "arm bl")
+            } else if i & 0b111100000000 == 0b100000000000 {
+
+                (CPU::arm_B, "arm b")
+            } else if i & 0b111000010000 == 0b100000010000 {
+
+                (CPU::arm_LDM, "arm ldm")
+            } else if i & 0b111000010000 == 0b100000000000 {
+
+                (CPU::arm_STM, "arm stm")
+            } else if i & 0b111000010000 == 0b011000010000 {
+
+                (CPU::arm_undefined, "arm_und")
+            } else if i & 0b110000010000 == 0b010000010000 {
+
+                (CPU::arm_LDR, "arm ldr")
+            } else if i & 0b110000010000 == 0b010000000000 {
+
+                (CPU::arm_STR, "arm str")
+            } else if i & 0b111000011001 == 0b000000011001 {
+
+                (CPU::arm_LDRH, "arm ldrh")
+            } else if i & 0b111000011001 == 0b000000001001 {
+
+                (CPU::arm_STRH, "arm strh")
+            } else if i & 0b111111111111 == 0b000100100001 {
+
+                (CPU::arm_BX, "arm bx")
+            } else if i & 0b111110111111 == 0b000100001001 {
+
+                (CPU::arm_SWP, "arm swp")
+            } else if i & 0b111110001111 == 0b000010001001 {
+
+                (CPU::arm_MULL, "arm mull")
+            } else if i & 0b111110001111 == 0b000000001001 {
+
+                (CPU::arm_MUL, "arm mul")
+            } else if i & 01100000000000 == 0b000000000000 {
+
+                (CPU::arm_data_proc, "arm data proc")
+            } else {
+
+                (CPU::arm_undefined, "arm und")
+            };
+
+            i += 1;
         }
+
+        cpu.write_pc(memory::GAME_PAK_OFFSET as u32);
+
+        cpu
     }
 
     pub fn clock(&mut self) {
+
+        sleep(std::time::Duration::from_millis(100));
 
         match self.state {
             CpuState::ARM => self.clock_arm(),
@@ -81,13 +268,17 @@ impl CPU {
         let opcode = self.fetch_arm_opcode();
 
         // DECODE
-        let instruction = CPU_ARM_LUT[CPU::arm_opcode_get_bits(opcode)];
+        let opcode_important_bits = CPU::arm_opcode_get_bits(opcode);
+
+        let (instruction, instruction_name) = self.arm_lut[CPU::arm_opcode_get_bits(opcode)];
+
+        println!("{}", instruction_name);
 
         if self.arm_check_cond(opcode) {
+
             // EXECUTE
             instruction(self, opcode);
         }
-
     }
 
     pub fn clock_thumb(&mut self) {
@@ -96,7 +287,9 @@ impl CPU {
         let opcode = self.fetch_thumb_opcode();
 
         // DECODE
-        let instruction = CPU_THUMB_LUT[CPU::thumb_opcode_get_bits(opcode)];
+        let (instruction, instruction_name) = self.thumb_lut[CPU::thumb_opcode_get_bits(opcode)];
+
+        println!("{}", instruction_name);
 
         // EXECUTE
         instruction(self, opcode);
@@ -118,40 +311,56 @@ impl CPU {
     }
 
     fn arm_opcode_get_bits(opcode: u32) -> usize {
-        let opcode = opcode as usize; 
+
+        let opcode = opcode as usize;
 
         // Bits 27 to 20
-        let upper_bits = (opcode >> 20) & 0xFF;
+        let upper_bits = (opcode >> 20) & 0xff;
 
         // Bits 7 to 4
-        let lower_bits = (opcode >> 4) & 0xF;
+        let lower_bits = (opcode >> 4) & 0xf;
 
         upper_bits | lower_bits
     }
 
     fn thumb_opcode_get_bits(opcode: u16) -> usize {
+
         let opcode = opcode as usize;
 
         opcode
     }
 
     fn arm_check_cond(&self, opcode: u32) -> bool {
-        todo!()
+
+        let condition: InstructionCondition = InstructionCondition::from_u32(opcode >> 28).unwrap();
+
+        match condition {
+            InstructionCondition::EQ => self.get_flag(Flag::Z),
+            InstructionCondition::NE => !self.get_flag(Flag::Z),
+            InstructionCondition::CS => self.get_flag(Flag::C),
+            InstructionCondition::CC => !self.get_flag(Flag::C),
+            InstructionCondition::MI => self.get_flag(Flag::N),
+            InstructionCondition::PL => !self.get_flag(Flag::N),
+            InstructionCondition::VS => self.get_flag(Flag::V),
+            InstructionCondition::VC => !self.get_flag(Flag::V),
+            InstructionCondition::HI => self.get_flag(Flag::C) && !self.get_flag(Flag::Z),
+            InstructionCondition::LS => !self.get_flag(Flag::C) || self.get_flag(Flag::Z),
+            InstructionCondition::GE => self.get_flag(Flag::N) == self.get_flag(Flag::V),
+            InstructionCondition::LT => self.get_flag(Flag::N) != self.get_flag(Flag::V),
+            InstructionCondition::GT => !self.get_flag(Flag::Z) && (self.get_flag(Flag::N) == self.get_flag(Flag::V)),
+            InstructionCondition::LE => self.get_flag(Flag::Z) || (self.get_flag(Flag::N) != self.get_flag(Flag::V)),
+            InstructionCondition::AL => true,
+        }
     }
 
     fn thumb_check_cond(&self, opcode: u16) -> bool {
+
         todo!()
     }
 
-    fn get_flag(&self, flag: Flag) -> u32 {
+    fn get_flag(&self, flag: Flag) -> bool {
 
-        if self.cpsr_register & flag as u32 != 0 {
-
-            1
-        } else {
-
-            0
-        }
+        self.cpsr_register & flag as u32 != 0
     }
 
     fn read_pc(&self) -> u32 {
@@ -433,7 +642,7 @@ impl CPU {
 
     fn arm_ADC(&mut self, op1: u32, op2: u32) -> u32 {
 
-        op1 + op2 + self.get_flag(Flag::C)
+        op1 + op2 + self.get_flag(Flag::C) as u32
     }
 
     fn arm_ADD(&mut self, op1: u32, op2: u32) -> u32 {
@@ -538,12 +747,12 @@ impl CPU {
 
     fn arm_RSC(&mut self, op1: u32, op2: u32) -> u32 {
 
-        op2 - op1 + self.get_flag(Flag::C) - 1
+        op2 - op1 + self.get_flag(Flag::C) as u32 - 1
     }
 
     fn arm_SBC(&mut self, op1: u32, op2: u32) -> u32 {
 
-        op1 - op2 + self.get_flag(Flag::C) - 1
+        op1 - op2 + self.get_flag(Flag::C) as u32 - 1
     }
 
     fn arm_STC(&mut self, opcode: u32) {}
@@ -649,114 +858,13 @@ impl CPU {
 
     fn thumb_TST(&mut self, opcode: u16) {}
 
-
-
     fn arm_undefined(&mut self, opcode: u32) {
+
         panic!("ARM UNDEFINED {:#x}", opcode);
     }
 
     fn thumb_undefined(&mut self, opcode: u16) {
+
         panic!("THUMB UNDEFINED {:#x}", opcode);
     }
-}
-
-const CPU_ARM_LUT : [for<'a> fn(&'a mut CPU, opcode: u32) ; 4096] = {
-    let mut lut : [for<'a> fn(&'a mut CPU, opcode: u32) ; 4096] = [CPU::arm_undefined; 4096];
-
-    let mut i = 0;
-
-    while i < 4096 {
-        lut[i] = if i & 0b111100000000 == 0b111100000000 {
-            CPU::arm_SWI
-        } else if i & 0b111100010001 == 0b111000010001 {
-            CPU::arm_MRC
-        } else if i & 0b111100010001 == 0b111000000001 {
-            CPU::arm_MCR
-        } else if i & 0b111100000001 == 0b111000000000 {
-            CPU::arm_CDP
-        } else if i & 0b111000010000 == 0b110000010000 {
-            CPU::arm_LDC
-        } else if i & 0b111000010000 == 0b110000000000 {
-            CPU::arm_STC
-        } else if i & 0b111100000000 == 0b101000000000 {
-            CPU::arm_BL
-        } else if i & 0b111100000000 == 0b100000000000 {
-            CPU::arm_B
-        } else if i & 0b111000010000 == 0b100000010000 {
-            CPU::arm_LDM
-        } else if i & 0b111000010000 == 0b100000000000 {
-            CPU::arm_STM
-        } else if i & 0b111000010000 == 0b011000010000 {
-            CPU::arm_undefined
-        } else if i & 0b110000010000 == 0b010000010000 {
-            CPU::arm_LDR
-        } else if i & 0b110000010000 == 0b010000000000 {
-            CPU::arm_STR
-        } else if i & 0b111000011001 == 0b000000011001 {
-            CPU::arm_LDRH
-        } else if i & 0b111000011001 == 0b000000001001 {
-            CPU::arm_STRH
-        } else if i & 0b111111111111 == 0b000100100001 {
-            CPU::arm_BX
-        } else if i & 0b111110111111 == 0b000100001001 {
-            CPU::arm_SWP
-        } else if i & 0b111110001111 == 0b000010001001 {
-            CPU::arm_MULL
-        } else if i & 0b111110001111 == 0b000000001001 {
-            CPU::arm_MUL
-        } else if i & 01100000000000 == 0b000000000000 {
-            CPU::arm_data_proc
-        } else {
-            CPU::arm_undefined
-        };
-
-        i += 1;
-    }
-
-    lut
-};
-
-const CPU_THUMB_LUT : [for<'a> fn(&'a mut CPU, opcode: u16) ; 4096] = {
-    let mut lut = [CPU::thumb_undefined; 4096];
-    
-    let mut i = 0;
-
-    while i < 256 {
-
-        lut[i] = if i & 0b11110000 == 0b11110000 {
-            CPU::thumb_BL
-        } else if i & 0b111110000 == 0b11100000 {
-            CPU::thumb_B
-        } else if i & 0b11111111 == 0b11011111 {
-            CPU::thumb_SWI
-        } else if i & 0b11110000 == 0b11010000 {
-            CPU::thumb_B_cond
-        } else if i & 0b11111000 == 0b11001000 {
-            CPU::thumb_LDMIA
-        } else if i & 0b11111000 == 0b11000000 {
-            CPU::thumb_STMIA
-        } else if i & 0b11111110 == 0b10111100 {
-            CPU::thumb_POP
-        } else if i & 0b11111110 == 0b10110100 {
-            CPU::thumb_PUSH
-        } else if i & 0b11111111 == 0b10110000 {
-            CPU::thumb_ADD_SP
-        } else if i & 0b11110000 == 0b10100000 {
-            CPU::thumb_LOAD_ADDR
-        } else if i & 0b11111000 == 0b10011000 {
-            CPU::thumb_LOAD_SP
-        } else if i & 0b11111000 == 0b10010000 {
-            CPU::thumb_STORE_SP
-        } else if i & 0b11111000 == 0b10001000 {
-            CPU::thumb_LDRH
-        } else if i & 0b11111000 == 0b10000000 {
-            CPU::thumb_STRH
-        } else if i & 0b11101000 == 0b01101000 {
-            CPU::thumb_LDR_imm
-        }
-
-        i += 1;
-    }
-
-    lut
 }
