@@ -2,9 +2,10 @@
 #![cfg_attr(debug_assertions, allow(dead_code))]
 #![cfg_attr(debug_assertions, allow(unused_variables))]
 
-use std::cell::RefCell;
+use std::io::Write;
 use std::rc::Rc;
 use std::thread::sleep;
+use std::{cell::RefCell, io};
 
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -33,13 +34,13 @@ enum CpuState {
 #[derive(Debug)]
 
 enum CpuMode {
-    User      = 0b10000,
-    FIQ       = 0b10001,
-    IRQ       = 0b10010,
-    Super     = 0b10011,
-    Abort     = 0b10111,
+    User = 0b10000,
+    FIQ = 0b10001,
+    IRQ = 0b10010,
+    Super = 0b10011,
+    Abort = 0b10111,
     Undefined = 0b11011,
-    System    = 0b11111,
+    System = 0b11111,
 }
 
 #[derive(FromPrimitive)]
@@ -65,16 +66,16 @@ enum InstructionCondition {
 }
 
 pub struct CPU {
-    mode:  CpuMode,
+    mode: CpuMode,
     state: CpuState,
 
-    gen_registers:    [u32; GEN_PURPOSE_REGISTERS_NUM],
+    gen_registers: [u32; GEN_PURPOSE_REGISTERS_NUM],
     status_registers: [u32; STATE_REGISTERS_NUM],
-    cpsr_register:    u32,
-    spsr_register:    [u32; SAVED_PROGRAM_STATUS_REGISTERS_NUM],
-    mem:              Rc<RefCell<Memory>>,
+    cpsr_register: u32,
+    spsr_register: [u32; SAVED_PROGRAM_STATUS_REGISTERS_NUM],
+    mem: Rc<RefCell<Memory>>,
 
-    arm_lut:   [(fn(&mut CPU, u32), &'static str); 4096],
+    arm_lut: [(fn(&mut CPU, u32), &'static str); 4096],
     thumb_lut: [(fn(&mut CPU, u16), &'static str); 256],
 }
 
@@ -90,7 +91,6 @@ enum Flag {
 
 impl std::fmt::Debug for CPU {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-
         f.debug_struct("CPU")
             .field("mode", &self.mode)
             .field("state", &self.state)
@@ -104,17 +104,16 @@ impl std::fmt::Debug for CPU {
 
 impl CPU {
     pub fn new(mem: &Rc<RefCell<Memory>>) -> CPU {
-
         let mut cpu = CPU {
-            mode:             CpuMode::User,
-            state:            CpuState::ARM,
-            gen_registers:    [0; GEN_PURPOSE_REGISTERS_NUM],
+            mode: CpuMode::User,
+            state: CpuState::ARM,
+            gen_registers: [0; GEN_PURPOSE_REGISTERS_NUM],
             status_registers: [0; STATE_REGISTERS_NUM],
-            cpsr_register:    0,
-            spsr_register:    [0; SAVED_PROGRAM_STATUS_REGISTERS_NUM],
-            mem:              mem.clone(),
+            cpsr_register: 0,
+            spsr_register: [0; SAVED_PROGRAM_STATUS_REGISTERS_NUM],
+            mem: mem.clone(),
 
-            arm_lut:   [(CPU::arm_undefined, "arm und"); 4096],
+            arm_lut: [(CPU::arm_undefined, "arm und"); 4096],
             thumb_lut: [(CPU::thumb_undefined, "thumb und"); 256],
         };
 
@@ -178,69 +177,47 @@ impl CPU {
         let mut i = 0;
 
         while i < 4096 {
-
             cpu.arm_lut[i] = if i & 0b111100000000 == 0b111100000000 {
-
                 (CPU::arm_SWI, "arm swi")
             } else if i & 0b111100010001 == 0b111000010001 {
-
                 (CPU::arm_MRC, "arm mrc")
             } else if i & 0b111100010001 == 0b111000000001 {
-
                 (CPU::arm_MCR, "arm mcr")
             } else if i & 0b111100000001 == 0b111000000000 {
-
                 (CPU::arm_CDP, "arm cdp")
             } else if i & 0b111000010000 == 0b110000010000 {
-
                 (CPU::arm_LDC, "arm ldc")
             } else if i & 0b111000010000 == 0b110000000000 {
-
                 (CPU::arm_STC, "arm stc")
             } else if i & 0b111100000000 == 0b101000000000 {
-
                 (CPU::arm_BL, "arm bl")
             } else if i & 0b111100000000 == 0b100000000000 {
-
                 (CPU::arm_B, "arm b")
             } else if i & 0b111000010000 == 0b100000010000 {
-
                 (CPU::arm_LDM, "arm ldm")
             } else if i & 0b111000010000 == 0b100000000000 {
-
                 (CPU::arm_STM, "arm stm")
             } else if i & 0b111000010000 == 0b011000010000 {
-
                 (CPU::arm_undefined, "arm_und")
             } else if i & 0b110000010000 == 0b010000010000 {
-
                 (CPU::arm_LDR, "arm ldr")
             } else if i & 0b110000010000 == 0b010000000000 {
-
                 (CPU::arm_STR, "arm str")
             } else if i & 0b111000011001 == 0b000000011001 {
-
                 (CPU::arm_LDRH, "arm ldrh")
             } else if i & 0b111000011001 == 0b000000001001 {
-
                 (CPU::arm_STRH, "arm strh")
             } else if i & 0b111111111111 == 0b000100100001 {
-
                 (CPU::arm_BX, "arm bx")
             } else if i & 0b111110111111 == 0b000100001001 {
-
                 (CPU::arm_SWP, "arm swp")
             } else if i & 0b111110001111 == 0b000010001001 {
-
                 (CPU::arm_MULL, "arm mull")
             } else if i & 0b111110001111 == 0b000000001001 {
-
                 (CPU::arm_MUL, "arm mul")
             } else if i & 01100000000000 == 0b000000000000 {
-
                 (CPU::arm_data_proc, "arm data proc")
             } else {
-
                 (CPU::arm_undefined, "arm und")
             };
 
@@ -253,7 +230,6 @@ impl CPU {
     }
 
     pub fn clock(&mut self) {
-
         sleep(std::time::Duration::from_millis(100));
 
         match self.state {
@@ -263,7 +239,6 @@ impl CPU {
     }
 
     pub fn clock_arm(&mut self) {
-
         // FETCH
         let opcode = self.fetch_arm_opcode();
 
@@ -273,16 +248,17 @@ impl CPU {
         let (instruction, instruction_name) = self.arm_lut[CPU::arm_opcode_get_bits(opcode)];
 
         println!("{}", instruction_name);
+        io::stdout().flush().unwrap();
 
         if self.arm_check_cond(opcode) {
-
             // EXECUTE
             instruction(self, opcode);
         }
+
+        self.add_pc(4);
     }
 
     pub fn clock_thumb(&mut self) {
-
         // FETCH
         let opcode = self.fetch_thumb_opcode();
 
@@ -293,17 +269,17 @@ impl CPU {
 
         // EXECUTE
         instruction(self, opcode);
+
+        self.add_pc(2);
     }
 
     fn fetch_arm_opcode(&self) -> u32 {
-
         let addr = self.read_pc();
 
         self.mem.borrow().read_word(addr)
     }
 
     fn fetch_thumb_opcode(&self) -> u16 {
-
         let addr = self.read_pc();
 
         // Do the thing about the bit saying if you should read the upper two bytes or the lower two bytes
@@ -311,11 +287,10 @@ impl CPU {
     }
 
     fn arm_opcode_get_bits(opcode: u32) -> usize {
-
         let opcode = opcode as usize;
 
         // Bits 27 to 20
-        let upper_bits = (opcode >> 20) & 0xff;
+        let upper_bits = (opcode >> 16) & 0xff0;
 
         // Bits 7 to 4
         let lower_bits = (opcode >> 4) & 0xf;
@@ -324,14 +299,12 @@ impl CPU {
     }
 
     fn thumb_opcode_get_bits(opcode: u16) -> usize {
-
         let opcode = opcode as usize;
 
         opcode
     }
 
     fn arm_check_cond(&self, opcode: u32) -> bool {
-
         let condition: InstructionCondition = InstructionCondition::from_u32(opcode >> 28).unwrap();
 
         match condition {
@@ -347,39 +320,44 @@ impl CPU {
             InstructionCondition::LS => !self.get_flag(Flag::C) || self.get_flag(Flag::Z),
             InstructionCondition::GE => self.get_flag(Flag::N) == self.get_flag(Flag::V),
             InstructionCondition::LT => self.get_flag(Flag::N) != self.get_flag(Flag::V),
-            InstructionCondition::GT => !self.get_flag(Flag::Z) && (self.get_flag(Flag::N) == self.get_flag(Flag::V)),
-            InstructionCondition::LE => self.get_flag(Flag::Z) || (self.get_flag(Flag::N) != self.get_flag(Flag::V)),
+            InstructionCondition::GT => {
+                !self.get_flag(Flag::Z) && (self.get_flag(Flag::N) == self.get_flag(Flag::V))
+            }
+            InstructionCondition::LE => {
+                self.get_flag(Flag::Z) || (self.get_flag(Flag::N) != self.get_flag(Flag::V))
+            }
             InstructionCondition::AL => true,
         }
     }
 
     fn thumb_check_cond(&self, opcode: u16) -> bool {
-
         todo!()
     }
 
     fn get_flag(&self, flag: Flag) -> bool {
-
         self.cpsr_register & flag as u32 != 0
     }
 
-    fn read_pc(&self) -> u32 {
+    fn set_flag(&mut self, flag: Flag) {
+        self.cpsr_register |= flag as u32;
+    }
 
+    fn unset_flag(&mut self, flag: Flag) {
+        self.cpsr_register &= !(flag as u32);
+    }
+
+    fn read_pc(&self) -> u32 {
         self.gen_registers[PROGRAM_COUNTER_INDEX as usize]
     }
 
     fn write_pc(&mut self, val: u32) {
-
         self.gen_registers[PROGRAM_COUNTER_INDEX as usize] = val;
     }
 
     fn add_pc(&mut self, offset: i32) {
-
         if offset < 0 {
-
             self.gen_registers[PROGRAM_COUNTER_INDEX as usize] -= offset as u32;
         } else {
-
             self.gen_registers[PROGRAM_COUNTER_INDEX as usize] += offset as u32;
         }
     }
@@ -449,7 +427,6 @@ impl CPU {
     //  R14_und  |   30  |
 
     fn write_reg(&mut self, reg: u32, val: u32) {
-
         let reg = reg as usize;
 
         match &self.mode {
@@ -457,46 +434,36 @@ impl CPU {
             CpuMode::System => self.gen_registers[reg] = val,
             CpuMode::FIQ => {
                 if 7 < reg && reg < 15 {
-
                     self.gen_registers[reg + 8] = val;
                 } else {
-
                     self.gen_registers[reg] = val;
                 }
             }
             CpuMode::Super => {
                 if reg == 13 || reg == 14 {
-
                     self.gen_registers[reg + 10] = val;
                 } else {
-
                     self.gen_registers[reg] = val;
                 }
             }
             CpuMode::Abort => {
                 if reg == 13 || reg == 14 {
-
                     self.gen_registers[reg + 12] = val;
                 } else {
-
                     self.gen_registers[reg] = val;
                 }
             }
             CpuMode::IRQ => {
                 if reg == 13 || reg == 14 {
-
                     self.gen_registers[reg + 14] = val;
                 } else {
-
                     self.gen_registers[reg] = val;
                 }
             }
             CpuMode::Undefined => {
                 if reg == 13 || reg == 14 {
-
                     self.gen_registers[reg + 16] = val;
                 } else {
-
                     self.gen_registers[reg] = val;
                 }
             }
@@ -504,7 +471,6 @@ impl CPU {
     }
 
     fn read_reg(&self, reg: u32) -> u32 {
-
         let reg = reg as usize;
 
         match &self.mode {
@@ -512,46 +478,36 @@ impl CPU {
             CpuMode::System => self.gen_registers[reg],
             CpuMode::FIQ => {
                 if 7 < reg && reg < 15 {
-
                     self.gen_registers[reg + 8]
                 } else {
-
                     self.gen_registers[reg]
                 }
             }
             CpuMode::Super => {
                 if reg == 13 || reg == 14 {
-
                     self.gen_registers[reg + 10]
                 } else {
-
                     self.gen_registers[reg]
                 }
             }
             CpuMode::Abort => {
                 if reg == 13 || reg == 14 {
-
                     self.gen_registers[reg + 12]
                 } else {
-
                     self.gen_registers[reg]
                 }
             }
             CpuMode::IRQ => {
                 if reg == 13 || reg == 14 {
-
                     self.gen_registers[reg + 14]
                 } else {
-
                     self.gen_registers[reg]
                 }
             }
             CpuMode::Undefined => {
                 if reg == 13 || reg == 14 {
-
                     self.gen_registers[reg + 16]
                 } else {
-
                     self.gen_registers[reg]
                 }
             }
@@ -560,13 +516,10 @@ impl CPU {
 
     // There are many errors in the barrel shifter logic but i can't be fucked sorting that out now
     fn barrel_shifter(&self, val: u32, shift_op: u32) -> u32 {
-
         let shift_amount = if shift_op & 0x1 != 0 {
-
             // Shift by bottom byte of register
             self.read_reg(shift_op >> 4) & 0xff
         } else {
-
             // Shift by 5 bit unsigned integer
             shift_op >> 3
         };
@@ -591,12 +544,10 @@ impl CPU {
     //
 
     fn arm_data_proc(&mut self, opcode: u32) {
-
         let op1 = self.read_reg((opcode >> 15) & 0xf);
 
         // If bit 25 is set, operand 2 is an immediate value, else, it's a register
         let op2 = if opcode & 1 << 25 != 0 {
-
             // Immediate value with Right Rotate
             let imm = opcode & 0xff;
 
@@ -604,7 +555,6 @@ impl CPU {
 
             imm.rotate_right(rot)
         } else {
-
             // Shifted register
             let val = self.read_reg(opcode & 0xf);
 
@@ -641,63 +591,77 @@ impl CPU {
     }
 
     fn arm_ADC(&mut self, op1: u32, op2: u32) -> u32 {
-
         op1 + op2 + self.get_flag(Flag::C) as u32
     }
 
     fn arm_ADD(&mut self, op1: u32, op2: u32) -> u32 {
-
         op1 + op2
     }
 
     fn arm_AND(&mut self, op1: u32, op2: u32) -> u32 {
-
         op1 & op2
     }
 
+    // note: could probably merge arm_B and arm_BL and
+    // save the PC if the link bit is set
+    // note: the PC value saved should be one after the current
+    // instruction due to some instruction prefetching
+    // stuff idk this is confusing
     fn arm_B(&mut self, opcode: u32) {
-
         let offset = ((opcode & 0xffffff) << 2) as i32;
 
-        self.add_pc(offset);
+        self.add_pc(offset + 8);
+
+        println!("ARM_B jumping to {:#x}", self.read_pc());
     }
 
     fn arm_BIC(&mut self, op1: u32, op2: u32) -> u32 {
-
         op1 & (!op2)
     }
 
     fn arm_BL(&mut self, opcode: u32) {
-
-        self.write_reg(LINK_REGISTER_INDEX, self.read_pc());
+        self.write_reg(LINK_REGISTER_INDEX, self.read_pc() + 4);
 
         let offset = ((opcode & 0xffffff) << 2) as i32;
 
-        self.add_pc(offset);
+        self.add_pc(offset + 8);
+
+        println!("ARM_BL jumping to {:#x}", self.read_pc());
     }
 
     fn arm_BX(&mut self, opcode: u32) {
-
         self.write_pc(self.read_reg(opcode & 0xf));
 
-        let new_state = if opcode & 0x1 == 0 { CpuState::ARM } else { CpuState::THUMB };
+        let new_state = if opcode & 0x1 == 0 {
+            CpuState::ARM
+        } else {
+            CpuState::THUMB
+        };
 
         if new_state != self.state {
-
             self.state = new_state;
 
-            todo!("Flush pipeline");
+            // todo!("Flush pipeline");
         }
     }
 
     fn arm_CDP(&mut self, opcode: u32) {}
 
-    fn arm_CMN(&mut self, op1: u32, op2: u32) {}
+    fn arm_CMN(&mut self, op1: u32, op2: u32) {
+        let res = op1 + op2;
+        let res = op1.overflowing_add(op2);
+        if res == 0 {
+            self.set_flag(Flag::Z);
+        } else {
+            self.unset_flag(Flag::Z);
+        }
+
+        if res 
+    }
 
     fn arm_CMP(&mut self, op1: u32, op2: u32) {}
 
     fn arm_EOR(&mut self, op1: u32, op2: u32) -> u32 {
-
         op1 ^ op2
     }
 
@@ -714,7 +678,6 @@ impl CPU {
     fn arm_MLA(&mut self, opcode: u32) {}
 
     fn arm_MOV(&mut self, op2: u32) -> u32 {
-
         op2
     }
 
@@ -731,27 +694,22 @@ impl CPU {
     fn arm_MULL(&mut self, opcode: u32) {}
 
     fn arm_MVN(&mut self, op2: u32) -> u32 {
-
         !op2
     }
 
     fn arm_ORR(&mut self, op1: u32, op2: u32) -> u32 {
-
         op1 | op2
     }
 
     fn arm_RSB(&mut self, op1: u32, op2: u32) -> u32 {
-
         op2 - op1
     }
 
     fn arm_RSC(&mut self, op1: u32, op2: u32) -> u32 {
-
         op2 - op1 + self.get_flag(Flag::C) as u32 - 1
     }
 
     fn arm_SBC(&mut self, op1: u32, op2: u32) -> u32 {
-
         op1 - op2 + self.get_flag(Flag::C) as u32 - 1
     }
 
@@ -764,7 +722,6 @@ impl CPU {
     fn arm_STRH(&mut self, opcode: u32) {}
 
     fn arm_SUB(&mut self, op1: u32, op2: u32) -> u32 {
-
         op1 - op2
     }
 
@@ -859,12 +816,10 @@ impl CPU {
     fn thumb_TST(&mut self, opcode: u16) {}
 
     fn arm_undefined(&mut self, opcode: u32) {
-
         panic!("ARM UNDEFINED {:#x}", opcode);
     }
 
     fn thumb_undefined(&mut self, opcode: u16) {
-
         panic!("THUMB UNDEFINED {:#x}", opcode);
     }
 }
