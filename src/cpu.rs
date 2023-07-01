@@ -3,8 +3,7 @@
 #![cfg_attr(debug_assertions, allow(unused_variables))]
 
 use std::cell::RefCell;
-use std::io;
-use std::io::Write;
+use std::fmt::Display;
 use std::rc::Rc;
 use std::thread::sleep;
 
@@ -66,9 +65,40 @@ enum InstructionCondition {
     AL = 0b1110, // | always                  | ---            |
 }
 
-type ARMInstruction = fn(&mut CPU, u32);
+#[derive(Clone, Copy, PartialEq)]
 
-type THUMBInstruction = fn(&mut CPU, u16);
+enum Opcode {
+    ARM(Option<ARMInstruction>, Option<u32>),
+    THUMB(Option<THUMBInstruction>, Option<u16>),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+
+pub struct ARMInstruction {
+    op:   fn(&mut CPU, u32),
+    desc: &'static str,
+}
+
+impl Display for ARMInstruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+
+        write!(f, "{}", self.desc)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+
+pub struct THUMBInstruction {
+    op:   fn(&mut CPU, u16),
+    desc: &'static str,
+}
+
+impl Display for THUMBInstruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+
+        write!(f, "{}", self.desc)
+    }
+}
 
 pub struct CPU {
     mode:  CpuMode,
@@ -80,8 +110,12 @@ pub struct CPU {
     spsr_register:    [u32; SAVED_PROGRAM_STATUS_REGISTERS_NUM],
     mem:              Rc<RefCell<Memory>>,
 
-    arm_lut:   [(ARMInstruction, &'static str); 4096],
-    thumb_lut: [(THUMBInstruction, &'static str); 256],
+    arm_lut:   [ARMInstruction; 4096],
+    thumb_lut: [THUMBInstruction; 256],
+
+    fetch_opcode:  Opcode,
+    decode_opcode: Opcode,
+    exec_opcode:   Opcode,
 }
 
 enum Flag {
@@ -121,7 +155,11 @@ impl CPU {
             mem:              mem.clone(),
 
             arm_lut:   CPU::build_arm_lut(),
-            thumb_lut: [(CPU::thumb_undefined, "thumb und"); 256],
+            thumb_lut: CPU::build_thumb_lut(),
+
+            fetch_opcode:  Opcode::ARM(None, None),
+            decode_opcode: Opcode::ARM(None, None),
+            exec_opcode:   Opcode::ARM(None, None),
         };
 
         cpu.write_pc(memory::GAME_PAK_OFFSET as u32);
@@ -129,9 +167,29 @@ impl CPU {
         cpu
     }
 
+    fn arm_pipeline_clear(&mut self) {
+
+        self.exec_opcode = Opcode::ARM(None, None);
+
+        self.decode_opcode = Opcode::ARM(None, None);
+
+        self.fetch_opcode = Opcode::ARM(None, None);
+    }
+
+    fn thumb_pipeline_clear(&mut self) {
+
+        self.exec_opcode = Opcode::THUMB(None, None);
+
+        self.decode_opcode = Opcode::THUMB(None, None);
+
+        self.fetch_opcode = Opcode::THUMB(None, None);
+    }
+
     pub fn clock(&mut self) {
 
         sleep(std::time::Duration::from_millis(100));
+
+        print!("tick ");
 
         match self.state {
             CpuState::ARM => self.clock_arm(),
@@ -141,59 +199,63 @@ impl CPU {
 
     pub fn clock_arm(&mut self) {
 
-        // FETCH
-        let opcode = self.fetch_arm_opcode();
+        print!("ARM ");
 
-        // DECODE
-        let opcode_important_bits = CPU::arm_opcode_get_bits(opcode);
+        // Execute the opcode we last decoded
+        self.exec_opcode = self.decode_opcode;
 
-        let (instruction, instruction_name) = self.arm_lut[CPU::arm_opcode_get_bits(opcode)];
+        if let Opcode::ARM(Some(instruction), Some(opcode)) = self.exec_opcode {
 
-        println!("{}", instruction_name);
+            if self.arm_cond_check(opcode) {
 
-        io::stdout().flush().unwrap();
+                print!("exec: {} | ", instruction.desc);
 
-        if self.arm_check_cond(opcode) {
+                (instruction.op)(self, opcode);
+            } else {
 
-            // EXECUTE
-            instruction(self, opcode);
+                print!("no exec: {} | ", instruction);
+            }
         }
 
+        // Decode the opcode we last fetched
+        self.decode_opcode = self.fetch_opcode;
+
+        if let Opcode::ARM(_, Some(opcode)) = self.decode_opcode {
+
+            self.decode_opcode = self.arm_opcode_decode(opcode);
+
+            if let Opcode::ARM(Some(instruction), _) = self.decode_opcode {
+
+                print!("decode: {:#x} -> {} | ", opcode, instruction);
+            }
+        }
+
+        // Fetch a new opcode
+        self.fetch_opcode = self.arm_opcode_fetch();
+
+        println!("fetch: {:#x}", self.read_pc());
+
+        // Move PC forward
         self.add_pc(4);
     }
 
-    pub fn clock_thumb(&mut self) {
+    fn arm_opcode_decode(&self, opcode: u32) -> Opcode {
 
-        // FETCH
-        let opcode = self.fetch_thumb_opcode();
+        let important_bits = CPU::arm_opcode_important_bits_get(opcode);
 
-        // DECODE
-        let (instruction, instruction_name) = self.thumb_lut[CPU::thumb_opcode_get_bits(opcode)];
+        let instruction = self.arm_lut[important_bits];
 
-        println!("{}", instruction_name);
-
-        // EXECUTE
-        instruction(self, opcode);
-
-        self.add_pc(2);
+        Opcode::ARM(Some(instruction), Some(opcode))
     }
 
-    fn fetch_arm_opcode(&self) -> u32 {
+    fn arm_opcode_fetch(&self) -> Opcode {
 
         let addr = self.read_pc();
 
-        self.mem.borrow().read_word(addr)
+        Opcode::ARM(None, Some(self.mem.borrow().read_word(addr)))
     }
 
-    fn fetch_thumb_opcode(&self) -> u16 {
-
-        let addr = self.read_pc();
-
-        // Do the thing about the bit saying if you should read the upper two bytes or the lower two bytes
-        self.mem.borrow().read_half(addr)
-    }
-
-    fn arm_opcode_get_bits(opcode: u32) -> usize {
+    fn arm_opcode_important_bits_get(opcode: u32) -> usize {
 
         let opcode = opcode as usize;
 
@@ -206,14 +268,73 @@ impl CPU {
         upper_bits | lower_bits
     }
 
-    fn thumb_opcode_get_bits(opcode: u16) -> usize {
+    pub fn clock_thumb(&mut self) {
 
-        let opcode = opcode as usize;
+        print!("THUMB ");
+
+        // Execute the opcode we last decoded
+        self.exec_opcode = self.decode_opcode;
+
+        if let Opcode::THUMB(Some(instruction), Some(opcode)) = self.exec_opcode {
+
+            if self.thumb_cond_check(opcode) {
+
+                print!("exec: {}", instruction);
+
+                (instruction.op)(self, opcode);
+            } else {
+
+                print!("no exec: {}", instruction);
+            }
+        }
+
+        // Decode the opcode we last fetched
+        self.decode_opcode = self.fetch_opcode;
+
+        if let Opcode::THUMB(_, Some(opcode)) = self.decode_opcode {
+
+            self.decode_opcode = self.thumb_opcode_decode(opcode);
+
+            if let Opcode::THUMB(Some(instruction), _) = self.decode_opcode {
+
+                print!("decode: {:#x} -> {}", opcode, instruction);
+            }
+        }
+
+        // Fetch a new opcode
+        self.fetch_opcode = self.arm_opcode_fetch();
+
+        println!("fetch: {:#x}", self.read_pc());
+
+        // Move PC forward
+        self.add_pc(2);
+    }
+
+    fn thumb_opcode_decode(&self, opcode: u16) -> Opcode {
+
+        let important_bits = CPU::thumb_opcode_important_bits_get(opcode);
+
+        let instruction = self.thumb_lut[important_bits];
+
+        Opcode::THUMB(Some(instruction), Some(opcode))
+    }
+
+    fn thumb_opcode_fetch(&self) -> Opcode {
+
+        let addr = self.read_pc();
+
+        // Do the thing about the bit saying if you should read the upper two bytes or the lower two bytes
+        Opcode::THUMB(None, Some(self.mem.borrow().read_half(addr)))
+    }
+
+    fn thumb_opcode_important_bits_get(opcode: u16) -> usize {
+
+        let opcode = (opcode >> 8) as usize;
 
         opcode
     }
 
-    fn arm_check_cond(&self, opcode: u32) -> bool {
+    fn arm_cond_check(&self, opcode: u32) -> bool {
 
         let condition: InstructionCondition = InstructionCondition::from_u32(opcode >> 28).unwrap();
 
@@ -236,7 +357,7 @@ impl CPU {
         }
     }
 
-    fn thumb_check_cond(&self, opcode: u16) -> bool {
+    fn thumb_cond_check(&self, opcode: u16) -> bool {
 
         todo!()
     }
@@ -502,7 +623,22 @@ impl CPU {
 
     fn arm_branch(&mut self, opcode: u32) {
 
-        todo!()
+        // If link bit is set
+        if opcode & (1 << 24) != 0 {
+
+            // do the link stuff
+            todo!();
+        }
+
+        // Offset is stored in bottom 24 bits as signed 2's complement
+        let offset = ((opcode as i32) & 0xffffff) << 2;
+
+        // Sign extend from 24 + 2 = 26 bits to 32 bits
+        let offset = offset.wrapping_shl(6).wrapping_shr(6);
+
+        self.add_pc(offset);
+
+        self.arm_pipeline_clear();
     }
 
     fn arm_coproc_data_transfer(&mut self, opcode: u32) {
@@ -630,129 +766,240 @@ impl CPU {
         panic!("THUMB UNDEFINED {:#x}", opcode);
     }
 
-    fn build_arm_lut() -> [(fn(&mut CPU, u32), &'static str); 4096] {
+    fn build_arm_lut() -> [ARMInstruction; 4096] {
 
-        let mut lut: [(ARMInstruction, &'static str); 4096] = [(CPU::arm_undefined, "ARM - undefined"); 4096];
+        let mut lut: [ARMInstruction; 4096] = [ARMInstruction {
+            op:   CPU::arm_undefined,
+            desc: "ARM - undefined",
+        }; 4096];
 
         for i in 0..4096 {
 
             lut[i] = if i & 0b111100000000 == 0b111100000000 {
 
-                (CPU::arm_software_interrupt, "ARM - software interrupt")
+                ARMInstruction {
+                    op:   CPU::arm_software_interrupt,
+                    desc: "ARM - software interrupt",
+                }
             } else if i & 0b111100000001 == 0b111000000001 {
 
-                (CPU::arm_coproc_register_transfer, "ARM - coproc reg transfer")
+                ARMInstruction {
+                    op:   CPU::arm_coproc_register_transfer,
+                    desc: "ARM - coproc reg transfer",
+                }
             } else if i & 0b111100000001 == 0b111000000000 {
 
-                (CPU::arm_coproc_data_operation, "ARM - coproc data op")
+                ARMInstruction {
+                    op:   CPU::arm_coproc_data_operation,
+                    desc: "ARM - coproc data op",
+                }
             } else if i & 0b111000000000 == 0b110000000000 {
 
-                (CPU::arm_coproc_data_transfer, "ARM - coproc data transfer")
+                ARMInstruction {
+                    op:   CPU::arm_coproc_data_transfer,
+                    desc: "ARM - coproc data transfer",
+                }
             } else if i & 0b111000000000 == 0b101000000000 {
 
-                (CPU::arm_branch, "ARM - branch")
+                ARMInstruction {
+                    op:   CPU::arm_branch,
+                    desc: "ARM - branch",
+                }
             } else if i & 0b111000000000 == 0b100000000000 {
 
-                (CPU::arm_block_data_transfer, "ARM - block data transfer")
+                ARMInstruction {
+                    op:   CPU::arm_block_data_transfer,
+                    desc: "ARM - block data transfer",
+                }
             } else if i & 0b111000000001 == 0b011000000001 {
 
-                (CPU::arm_undefined, "ARM - undefined")
+                ARMInstruction {
+                    op:   CPU::arm_undefined,
+                    desc: "ARM - undefined",
+                }
             } else if i & 0b110000000000 == 0b010000000000 {
 
-                (CPU::arm_single_data_transfer, "ARM - single data transfer")
+                ARMInstruction {
+                    op:   CPU::arm_single_data_transfer,
+                    desc: "ARM - single data transfer",
+                }
             } else if i & 0b111000001001 == 0b000000001001 {
 
-                (CPU::arm_halfword_data_transfer, "ARM - halfword data transfer")
+                ARMInstruction {
+                    op:   CPU::arm_halfword_data_transfer,
+                    desc: "ARM - halfword data transfer",
+                }
             } else if i & 0b111111111111 == 0b000100100001 {
 
-                (CPU::arm_branch_exchange, "ARM - branch exchange")
+                ARMInstruction {
+                    op:   CPU::arm_branch_exchange,
+                    desc: "ARM - branch exchange",
+                }
             } else if i & 0b111110111111 == 0b000100001001 {
 
-                (CPU::arm_single_data_swap, "ARM - single data swap")
+                ARMInstruction {
+                    op:   CPU::arm_single_data_swap,
+                    desc: "ARM - single data swap",
+                }
             } else if i & 0b111110001111 == 0b000010001001 {
 
-                (CPU::arm_multiply_long, "ARM - multiply long")
+                ARMInstruction {
+                    op:   CPU::arm_multiply_long,
+                    desc: "ARM - multiply long",
+                }
             } else if i & 0b111111001111 == 0b000000001001 {
 
-                (CPU::arm_multiply, "ARM - multiply")
+                ARMInstruction {
+                    op:   CPU::arm_multiply,
+                    desc: "ARM - multiply",
+                }
             } else if i & 0b110000000000 == 0b000000000000 {
 
-                (CPU::arm_data_proc, "ARM - data proc")
+                ARMInstruction {
+                    op:   CPU::arm_data_proc,
+                    desc: "ARM - data proc",
+                }
             } else {
 
-                (CPU::arm_undefined, "ARM - HAAAAAAAA")
+                ARMInstruction {
+                    op:   CPU::arm_undefined,
+                    desc: "ARM - HAAAAAAAA",
+                }
             }
         }
 
         lut
     }
 
-    fn build_thumb_lut() -> [(fn(&mut CPU, u16), &'static str); 256] {
+    fn build_thumb_lut() -> [THUMBInstruction; 256] {
 
-        let mut lut: [(fn(&mut CPU, u16), &'static str); 256] = [(CPU::thumb_undefined, "THUMB - undefined"); 256];
+        let mut lut: [THUMBInstruction; 256] = [THUMBInstruction {
+            op:   CPU::thumb_undefined,
+            desc: "THUMB - undefined",
+        }; 256];
 
         for i in 0..256 {
 
             lut[i] = if i & 0b11110000 == 0b11110000 {
 
-                (CPU::thumb_long_branch_link, "THUMB - long branch link")
+                THUMBInstruction {
+                    op:   CPU::thumb_long_branch_link,
+                    desc: "THUMB - long branch link",
+                }
             } else if i & 0b11111000 == 0b11100000 {
 
-                (CPU::thumb_uncond_branch, "THUMB - uncond branch")
+                THUMBInstruction {
+                    op:   CPU::thumb_uncond_branch,
+                    desc: "THUMB - uncond branch",
+                }
             } else if i & 0b11111111 == 0b11011111 {
 
-                (CPU::thumb_software_interrupt, "THUMB - software interrupt")
+                THUMBInstruction {
+                    op:   CPU::thumb_software_interrupt,
+                    desc: "THUMB - software interrupt",
+                }
             } else if i & 0b11110000 == 0b11010000 {
 
-                (CPU::thumb_cond_branch, "THUMB - cond branch")
+                THUMBInstruction {
+                    op:   CPU::thumb_cond_branch,
+                    desc: "THUMB - cond branch",
+                }
             } else if i & 0b11110000 == 0b11000000 {
 
-                (CPU::thumb_multiple_load_store, "THUMB - multiple load store")
+                THUMBInstruction {
+                    op:   CPU::thumb_multiple_load_store,
+                    desc: "THUMB - multiple load store",
+                }
             } else if i & 0b11110110 == 0b10110100 {
 
-                (CPU::thumb_push_pop_reg, "THUMB - push pop reg")
+                THUMBInstruction {
+                    op:   CPU::thumb_push_pop_reg,
+                    desc: "THUMB - push pop reg",
+                }
             } else if i & 0b11111111 == 0b10110000 {
 
-                (CPU::thumb_add_offset_to_sp, "THUMB - add off to sp")
+                THUMBInstruction {
+                    op:   CPU::thumb_add_offset_to_sp,
+                    desc: "THUMB - add off to sp",
+                }
             } else if i & 0b11110000 == 0b10100000 {
 
-                (CPU::thumb_load_addr, "THUMB - load addr")
+                THUMBInstruction {
+                    op:   CPU::thumb_load_addr,
+                    desc: "THUMB - load addr",
+                }
             } else if i & 0b11110000 == 0b10010000 {
 
-                (CPU::thumb_sp_relative_load_store, "THUMB - sp relative load store")
+                THUMBInstruction {
+                    op:   CPU::thumb_sp_relative_load_store,
+                    desc: "THUMB - sp relative load store",
+                }
             } else if i & 0b11110000 == 0b10000000 {
 
-                (CPU::thumb_load_store_halfword, "THUMB - load store halfword")
+                THUMBInstruction {
+                    op:   CPU::thumb_load_store_halfword,
+                    desc: "THUMB - load store halfword",
+                }
             } else if i & 0b11100000 == 0b01100000 {
 
-                (CPU::thumb_load_store_imm_off, "THUMB - load store imm off")
+                THUMBInstruction {
+                    op:   CPU::thumb_load_store_imm_off,
+                    desc: "THUMB - load store imm off",
+                }
             } else if i & 0b11110010 == 0b01010010 {
 
-                (CPU::thumb_load_store_sign_ext_byte_halfword, "THUMB - load store sign ext byte halfword")
+                THUMBInstruction {
+                    op:   CPU::thumb_load_store_sign_ext_byte_halfword,
+                    desc: "THUMB - load store sign ext byte halfword",
+                }
             } else if i & 0b11110010 == 0b01010000 {
 
-                (CPU::thumb_load_store_reg_off, "THUMB - load store reg off")
+                THUMBInstruction {
+                    op:   CPU::thumb_load_store_reg_off,
+                    desc: "THUMB - load store reg off",
+                }
             } else if i & 0b11111000 == 0b10010000 {
 
-                (CPU::thumb_pc_relative_load, "THUMB - pc relative load")
+                THUMBInstruction {
+                    op:   CPU::thumb_pc_relative_load,
+                    desc: "THUMB - pc relative load",
+                }
             } else if i & 0b11111100 == 0b01000100 {
 
-                (CPU::thumb_hi_reg_op_branch_exchange, "THUMB - hi reg op branch exchange")
+                THUMBInstruction {
+                    op:   CPU::thumb_hi_reg_op_branch_exchange,
+                    desc: "THUMB - hi reg op branch exchange",
+                }
             } else if i & 0b11111100 == 0b01000000 {
 
-                (CPU::thumb_alu_op, "THUMB - alu op")
+                THUMBInstruction {
+                    op:   CPU::thumb_alu_op,
+                    desc: "THUMB - alu op",
+                }
             } else if i & 0b11100000 == 0b00100000 {
 
-                (CPU::thumb_move_compare_add_sub_imm, "THUMB - move compare add sub imm")
+                THUMBInstruction {
+                    op:   CPU::thumb_move_compare_add_sub_imm,
+                    desc: "THUMB - move compare add sub imm",
+                }
             } else if i & 0b11111000 == 0b00011000 {
 
-                (CPU::thumb_add_sub, "THUMB - add sub")
+                THUMBInstruction {
+                    op:   CPU::thumb_add_sub,
+                    desc: "THUMB - add sub",
+                }
             } else if i & 0111000000 == 0b00000000 {
 
-                (CPU::thumb_move_shifted_register, "THUMB - move shifted reg")
+                THUMBInstruction {
+                    op:   CPU::thumb_move_shifted_register,
+                    desc: "THUMB - move shifted reg",
+                }
             } else {
 
-                (CPU::thumb_undefined, "THUMB - undefined (it's bad)")
+                THUMBInstruction {
+                    op:   CPU::thumb_undefined,
+                    desc: "THUMB - undefined (it's bad)",
+                }
             }
         }
 
