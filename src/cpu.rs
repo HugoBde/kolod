@@ -25,14 +25,12 @@ const LINK_REGISTER_INDEX: u32 = 14;
 const PROGRAM_COUNTER_INDEX: u32 = 15;
 
 #[derive(PartialEq, Debug)]
-
 enum CpuState {
     ARM,
     THUMB,
 }
 
 #[derive(Debug)]
-
 enum CpuMode {
     User = 0b10000,
     FIQ = 0b10001,
@@ -44,7 +42,6 @@ enum CpuMode {
 }
 
 #[derive(FromPrimitive)]
-
 enum InstructionCondition {
     //              |          desc           |  flags         |
     //              +-------------------------+----------------+
@@ -65,15 +62,33 @@ enum InstructionCondition {
     AL = 0b1110, // | always                  | ---            |
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(FromPrimitive)]
+enum DataProcessingOperations {
+    AND = 0b0000,
+    EOR = 0b0001,
+    SUB = 0b0010,
+    RSB = 0b0011,
+    ADD = 0b0100,
+    ADC = 0b0101,
+    SBC = 0b0110,
+    RSC = 0b0111,
+    TST = 0b1000,
+    TEQ = 0b1001,
+    CMP = 0b1010,
+    CMN = 0b1011,
+    ORR = 0b1100,
+    MOV = 0b1101,
+    BIC = 0b1110,
+    MVN = 0b1111,
+}
 
+#[derive(Clone, Copy, PartialEq)]
 enum Opcode {
     ARM(Option<ARMInstruction>, Option<u32>),
     THUMB(Option<THUMBInstruction>, Option<u16>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
-
 pub struct ARMInstruction {
     op: fn(&mut CPU, u32),
     desc: &'static str,
@@ -86,7 +101,6 @@ impl Display for ARMInstruction {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-
 pub struct THUMBInstruction {
     op: fn(&mut CPU, u16),
     desc: &'static str,
@@ -520,8 +534,24 @@ impl CPU {
     }
 
     // There are many errors in the barrel shifter logic but i can't be fucked sorting that out now
-    fn barrel_shifter(val: u32, shift_op: u32) -> u32 {
-        0
+    fn barrel_shifter(&mut self, val: u32, shift_op: u32) -> u32 {
+        let shift_type = (shift_op >> 1) & 0b11;
+        let shift_amount = if shift_op & 0b1 != 0 {
+            let reg_s = shift_op >> 8;
+            // todo: add logic for overflowing shifts (shifts of more than 32 bits)
+            self.read_reg(reg_s)
+        } else {
+            shift_op >> 7
+        };
+        // todo: add logic to set the carry flag as needed
+        // todo: implement rotate right extended
+        match shift_type {
+            0b00 => val << shift_amount,
+            0b01 => val >> shift_amount,
+            0b10 => val >> shift_amount as i32,
+            0b11 => val.rotate_right(shift_amount),
+            _ => panic!("how??"),
+        }
     }
 
     //  ALL INSTRUCTIONS HAVE ALREADY BEEN CHECKED FOR CONDITIONS BEFORE CALLING
@@ -530,48 +560,77 @@ impl CPU {
     fn arm_data_proc(&mut self, opcode: u32) {
         let operand_1 = {
             let reg_n = (opcode >> 16) & 0xf;
-            self.read_reg(reg_n);
+            self.read_reg(reg_n)
         };
 
         let operand_2 = {
             let operand_2 = opcode & 0xfff;
-            // Bit 25 specifies whether operand 2 is an immediate value or not
             if opcode & (1 << 25) != 0 {
+                // Rotated Immediate operand
                 let imm = opcode & 0xff;
                 let shift = (opcode >> 8) & 0xf;
                 // apply shift to imm
-                0
+                imm.rotate_right(shift * 2)
             } else {
+                // Shifted Register operand
                 let reg_m = opcode & 0xf;
                 let shift = (opcode >> 4) & 0xff;
                 // apply shift to value stored in reg_m
-                1
+                self.barrel_shifter(self.read_reg(reg_m), shift)
             }
         };
-        let inner_opcode = (opcode >> 21) & 0xf;
 
-        match inner_opcode {
-            0b0000 => todo!(),
-            0b0001 => todo!(),
-            0b0010 => todo!(),
-            0b0011 => todo!(),
-            0b0100 => todo!(),
-            0b0101 => todo!(),
-            0b0110 => todo!(),
-            0b0111 => todo!(),
-            0b1000 => todo!(),
-            0b1001 => todo!(),
-            0b1010 => todo!(),
-            0b1011 => todo!(),
-            0b1100 => todo!(),
-            0b1101 => todo!(),
-            0b1110 => todo!(),
-            0b1111 => todo!(),
+        let reg_d = (opcode >> 12) & 0xf;
+        let is_s_bit_set = opcode & (1 << 20) != 0;
 
-            _ => panic!("how did we get here???"),
+        let inner_opcode: DataProcessingOperations =
+            DataProcessingOperations::from_u32((opcode >> 21) & 0xf).unwrap();
+
+        let carry_bit = if self.get_flag(Flag::C) { 1 } else { 0 };
+
+        // todo: set the flags if s bit is set
+        let res = match inner_opcode {
+            DataProcessingOperations::AND => operand_1 & operand_2,
+            DataProcessingOperations::EOR => operand_1 ^ operand_2,
+            DataProcessingOperations::SUB => operand_1 - operand_2,
+            DataProcessingOperations::RSB => operand_2 - operand_1,
+            DataProcessingOperations::ADD => operand_1 + operand_2,
+            DataProcessingOperations::ADC => operand_1 + operand_2 + carry_bit,
+            DataProcessingOperations::SBC => operand_1 - operand_2 + carry_bit - 1,
+            DataProcessingOperations::RSC => operand_2 - operand_1 + carry_bit - 1,
+            DataProcessingOperations::TST => operand_1 & operand_2,
+            DataProcessingOperations::TEQ => operand_1 ^ operand_2,
+            DataProcessingOperations::CMP => operand_1 - operand_2,
+            DataProcessingOperations::CMN => operand_1 + operand_2,
+            DataProcessingOperations::ORR => operand_1 | operand_2,
+            DataProcessingOperations::MOV => operand_2,
+            DataProcessingOperations::BIC => operand_1 & !operand_2,
+            DataProcessingOperations::MVN => !operand_2,
+        };
+
+        if is_s_bit_set {
+            // todo: C flag
+            // todo: V flag
+            if res == 0 {
+                self.set_flag(Flag::Z);
+            } else {
+                self.unset_flag(Flag::Z);
+            }
+
+            if res & (1 << 31) != 0 {
+                self.set_flag(Flag::N);
+            } else {
+                self.unset_flag(Flag::N);
+            }
         }
 
-        todo!()
+        match inner_opcode {
+            DataProcessingOperations::TST
+            | DataProcessingOperations::TEQ
+            | DataProcessingOperations::CMP
+            | DataProcessingOperations::CMN => {} // do nothing
+            _ => self.write_reg(reg_d, res),
+        }
     }
 
     fn arm_multiply(&mut self, opcode: u32) {
